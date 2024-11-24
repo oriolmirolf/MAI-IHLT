@@ -1,0 +1,7 @@
+numpy
+pandas
+scikit-learn
+matplotlib
+xgboost
+nltk
+spacy==3.7.5 # matching colab
