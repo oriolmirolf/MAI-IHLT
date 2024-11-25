@@ -1,35 +1,25 @@
 # models.py
 
+import numpy as np
+from sklearn.model_selection import KFold
 from sklearn.linear_model import LinearRegression
-from sklearn.svm import SVR
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.tree import DecisionTreeRegressor
 
-
-def train_model(X, y, model_type='linear'):
-    """
-    Train a regression model.
-
-    Args:
-        X (DataFrame): Feature matrix.
-        y (ndarray): Target values.
-        model_type (str): Type of model ('linear', 'svr', 'random_forest', 'gradient_boosting', 'decision_tree').
-
-    Returns:
-        model: Trained model.
-    """
-    if model_type == 'linear':
-        model = LinearRegression()
-    elif model_type == 'svr':
-        model = SVR(kernel='rbf')
-    elif model_type == 'random_forest':
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-    elif model_type == 'gradient_boosting':
-        model = GradientBoostingRegressor(n_estimators=100, random_state=42)
-    elif model_type == 'decision_tree':
-        model = DecisionTreeRegressor(random_state=42)
-    else:
-        raise ValueError('Invalid model type specified.')
-
+def train_model(X, y):
+    model = LinearRegression()
     model.fit(X, y)
     return model
+
+def cross_validate_model(X, y, cv=5):
+    kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+    scores = []
+    for train_index, val_index in kf.split(X):
+        X_train_cv, X_val_cv = X[train_index], X[val_index]
+        y_train_cv, y_val_cv = y[train_index], y[val_index]
+        model = train_model(X_train_cv, y_train_cv)
+        y_pred_cv = model.predict(X_val_cv)
+        score = evaluate_predictions(y_val_cv, y_pred_cv)
+        scores.append(score)
+    return np.mean(scores)
+
+def predict(model, X):
+    return model.predict(X)

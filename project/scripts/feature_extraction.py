@@ -20,7 +20,70 @@ import functools
 
 nlp = spacy.load('en_core_web_sm')
 
-# Since we need to cache computations per sentence, we define functions that process individual sentences and decorate them with lru_cache
+from tqdm import tqdm
+from multiprocessing import Pool, cpu_count
+
+import pandas as pd
+
+# ---------------------------- #    
+#  FEATURE EXTRACTOR FUNCTION  #
+# ---------------------------- #    
+
+class FeatureExtractor:
+    def __init__(self):
+        """Initialize the FeatureExtractor with an internal memoization dictionary."""
+        self.memoized_pair_features = {}
+
+    def extract_pair_features(self, s1, s2):
+        """Extract features for a pair of sentences with order-invariant memoization."""
+        # Use frozenset to make memoization invariant to the order of s1 and s2
+        key = frozenset([s1, s2])
+        if key in self.memoized_pair_features:
+            return self.memoized_pair_features[key]
+        features = extract_features(s1, s2)  # Custom feature computation
+        self.memoized_pair_features[key] = features
+        return features
+
+    def process_row(self, row):
+        """Process a single row and extract features for the sentence pair."""
+        s1, s2, score, ds = row
+
+        # Extract features for the sentence pair
+        features = self.extract_pair_features(s1, s2)
+
+        # Include score and dataset in the result
+        features['score'] = score
+        features['dataset'] = ds
+
+        return features
+
+    def extract_features_parallel(self, data):
+        """Extract features in parallel and return a DataFrame."""
+        with Pool(cpu_count()) as pool:
+            results = list(
+                tqdm(
+                    pool.imap(self.process_row, data),
+                    total=len(data),
+                    desc="Extracting Features"
+                )
+            )
+        # Convert the list of feature dictionaries to a DataFrame
+        return pd.DataFrame(results)
+    
+    def extract_features_sequential(self, data):
+        """Extract features sequentially and return a DataFrame."""
+        results = []
+        for row in tqdm(data, desc="Extracting Features (Sequential)"):
+            results.append(self.process_row(row))
+        # Convert the list of feature dictionaries to a DataFrame
+        return pd.DataFrame(results)
+
+
+
+    
+# ----------------------- #    
+# ALL RELEVANT FUNCTIONS  #
+# ----------------------- #    
 
 @functools.lru_cache(maxsize=None)
 def preprocess_sentence(s):
@@ -664,17 +727,23 @@ def lsa_similarity(s1, s2):
     tfidf_matrix = tfidf_vectorizer.fit_transform([s1, s2])
     n_features = tfidf_matrix.shape[1]
 
-    if n_features >= 2:
+    if n_features >= 2:  # Ensure there are enough features for meaningful analysis
         n_components = min(100, n_features - 1)
-        svd = TruncatedSVD(n_components=n_components)
-        lsa = make_pipeline(svd, Normalizer(copy=False))
-        lsa_matrix = lsa.fit_transform(tfidf_matrix)
-        sim = cosine_similarity([lsa_matrix[0]], [lsa_matrix[1]])[0][0]
-        if np.isnan(sim):
+        try:
+            svd = TruncatedSVD(n_components=n_components, random_state=42)
+            lsa = make_pipeline(svd, Normalizer(copy=False))
+            lsa_matrix = lsa.fit_transform(tfidf_matrix)
+            sim = cosine_similarity([lsa_matrix[0]], [lsa_matrix[1]])[0][0]
+            if np.isnan(sim):  # Handle NaN results
+                sim = 0.0
+        except ValueError as e:
+            # Catch errors like empty matrices or insufficient rank
             sim = 0.0
     else:
         # Fallback to cosine similarity of TF-IDF vectors
         sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+        if np.isnan(sim):  # Handle NaN results
+            sim = 0.0
     return sim
 
 def lda_similarity(s1, s2):

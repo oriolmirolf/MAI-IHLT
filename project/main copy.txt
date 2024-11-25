@@ -1,0 +1,738 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# IHLT Project"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "\n",
+    "## Introduction\n",
+    "\n",
+    "In this project, we implement approaches to detect paraphrases using sentence similarity metrics by exploring:\n",
+    "\n",
+    "- **Lexical features alone**\n",
+    "- **Syntactic features alone**\n",
+    "- **Combination of lexical, syntactic, and semantic features**\n",
+    "\n",
+    "We use **XGBoost** as our machine learning model and cite properly where each technique is derived from, based on the curated compilation from SemEval 2012 papers.\n",
+    "\n",
+    "### Motivation\n",
+    "\n",
+    "Understanding semantic similarity between sentences is essential for various NLP tasks, such as machine translation, summarization, and question answering. The SemEval 2012 Task 6 provided a benchmark for evaluating semantic textual similarity methods.\n",
+    "\n",
+    "### Features Overview\n",
+    "\n",
+    "Based on insights from SemEval 2012 Task 6 papers ([2], [4], [8]), we implement the following features:\n",
+    "\n",
+    "- **Lexical Features**  \n",
+    "  Derived from methods used in SemEval 2012 papers [2], [4], [8].\n",
+    "  - Jaccard similarity\n",
+    "  - Normalized edit distance\n",
+    "  - Cosine similarity using TF-IDF vectors\n",
+    "  - Word n-gram overlap\n",
+    "  - Character n-gram overlap\n",
+    "  - Token overlap ratio\n",
+    "  - Longest common subsequence\n",
+    "  - String matching metrics\n",
+    "  - Word order similarity\n",
+    "  - Normalized difference in sentence lengths\n",
+    "\n",
+    "- **Syntactic Features**  \n",
+    "  Derived from methods in SemEval 2012 papers [2], [3].\n",
+    "  - POS tag overlap ratio\n",
+    "  - POS tag sequence similarity\n",
+    "  - Dependency relation overlap\n",
+    "  - Grammatical relations overlap\n",
+    "\n",
+    "- **Semantic Features**  \n",
+    "  Derived from methods in SemEval 2012 papers [2], [8].\n",
+    "  - WordNet-based similarity metrics\n",
+    "  - Named entity overlap\n",
+    "  - Semantic word overlap using synonyms\n",
+    "\n",
+    "---"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "The current jupyter notebook \n",
+    "\n",
+    "python 3.10.12 as in colab"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 1. Data Preparation"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 1.1 Import Libraries"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# basic\n",
+    "import os\n",
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "from tqdm import tqdm\n",
+    "\n",
+    "# parallelise execution\n",
+    "from concurrent.futures import ThreadPoolExecutor, as_completed\n",
+    "\n",
+    "# nlp\n",
+    "import nltk\n",
+    "import spacy\n",
+    "\n",
+    "# nltk downloads\n",
+    "nltk.download('punkt')\n",
+    "nltk.download('averaged_perceptron_tagger')\n",
+    "nltk.download('wordnet')\n",
+    "nltk.download('stopwords')\n",
+    "\n",
+    "# our scripts\n",
+    "from scripts.data_loader import load_data\n",
+    "from scripts.preprocessing import preprocess_sentence\n",
+    "from scripts.feature_extraction import extract_features\n",
+    "from scripts.evaluation import evaluate_model, train_xgboost, train_random_forest"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 1.2 Load Data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "data_dir = 'data'\n",
+    "\n",
+    "# Load training data\n",
+    "train_data = load_data(data_dir, dataset_type='train')\n",
+    "\n",
+    "# Load test data\n",
+    "test_data = load_data(data_dir, dataset_type='test-gold')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 1.3 Explore Data"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 2. Feature Extraction\n",
+    "\n",
+    "To avoid recalculation, we extract all features at once and then filter before training!"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from tqdm import tqdm\n",
+    "from multiprocessing import Pool, cpu_count\n",
+    "import pandas as pd\n",
+    "\n",
+    "def process_row(row):\n",
+    "    \"\"\"Process a single row and extract features.\"\"\"\n",
+    "    s1, s2, score = row\n",
+    "    if (s1, s2) in memoized_features:\n",
+    "        features = memoized_features[(s1, s2)]\n",
+    "    else:\n",
+    "        features = extract_features(s1, s2)\n",
+    "        memoized_features[(s1, s2)] = features\n",
+    "    return features, score\n",
+    "\n",
+    "def extract_features_parallel(data):\n",
+    "    \"\"\"Extract features in parallel using multiprocessing.\"\"\"\n",
+    "    with Pool(cpu_count()) as pool:\n",
+    "        results = list(tqdm(pool.imap(process_row, data), total=len(data), desc=\"Extracting Features\"))\n",
+    "    return results"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Memoization dictionary to store computed features (reuse the same dictionary for both train and test)\n",
+    "memoized_features = {}\n",
+    "\n",
+    "# The `process_row` and `extract_features_parallel` functions remain unchanged\n",
+    "\n",
+    "# Process training data\n",
+    "results = extract_features_parallel(train_data)\n",
+    "\n",
+    "# Prepare the DataFrame\n",
+    "train_features, train_scores = zip(*results)\n",
+    "train_df = pd.DataFrame(train_features)\n",
+    "train_df['score'] = train_scores\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Extract features for training data\n",
+    "train_features = []\n",
+    "train_scores = []\n",
+    "for s1, s2, score in tqdm(train_data, desc=\"Extracting Features\"):\n",
+    "    features = extract_features(s1, s2)  # All features computed here\n",
+    "    train_features.append(features)\n",
+    "    train_scores.append(score)\n",
+    "\n",
+    "train_df = pd.DataFrame(train_features)\n",
+    "train_df['score'] = train_scores"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Run the optimized feature extraction\n",
+    "results = extract_features_parallel(test_data)\n",
+    "\n",
+    "# Prepare the DataFrame\n",
+    "test_features, test_scores = zip(*results)\n",
+    "test_df = pd.DataFrame(test_features)\n",
+    "test_df['score'] = test_scores\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Extract features for test data\n",
+    "test_features = []\n",
+    "test_scores = []\n",
+    "for s1, s2, score in tqdm(test_data, desc=\"Extracting Features\"):\n",
+    "    features = extract_features(s1, s2)\n",
+    "    test_features.append(features)\n",
+    "    test_scores.append(score)\n",
+    "\n",
+    "test_df = pd.DataFrame(test_features)\n",
+    "test_df['score'] = test_scores"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 3. Model Training and Evaluation\n",
+    "\n",
+    "We train the XGBoost model using different feature sets and evaluate them using Pearson correlation. XGBoost is a powerful gradient boosting framework and was selected as per the project's requirement."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from sklearn.ensemble import RandomForestRegressor\n",
+    "\n",
+    "def train_random_forest(X_train, y_train, params=None):\n",
+    "    \"\"\"\n",
+    "    Train a Random Forest regressor.\n",
+    "\n",
+    "    Args:\n",
+    "        X_train: Training feature matrix.\n",
+    "        y_train: Training target values.\n",
+    "        params: Dictionary of Random Forest parameters.\n",
+    "\n",
+    "    Returns:\n",
+    "        model: Trained Random Forest model.\n",
+    "    \"\"\"\n",
+    "    if params is None:\n",
+    "        params = {'n_estimators': 100, 'random_state': 42}\n",
+    "    model = RandomForestRegressor(**params)\n",
+    "    model.fit(X_train, y_train)\n",
+    "    return model\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.1 Using Lexical Features Only"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "lexical_features_columns = [col for col in train_df.columns if col.startswith('lex_')]\n",
+    "\n",
+    "X_train_lexical = train_df[lexical_features_columns]\n",
+    "y_train = train_df['score']\n",
+    "\n",
+    "X_test_lexical = test_df[lexical_features_columns]\n",
+    "y_test = test_df['score']\n",
+    "\n",
+    "# Train model\n",
+    "lexical_model = train_random_forest(X_train_lexical, y_train)\n",
+    "\n",
+    "# Predict and evaluate\n",
+    "y_pred_lexical = lexical_model.predict(X_test_lexical)\n",
+    "lexical_correlation = evaluate_model(y_test, y_pred_lexical)\n",
+    "print(f\"Pearson Correlation (Lexical Features): {lexical_correlation:.4f}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.2 Using Syntactic Features Only"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "syntactic_features_columns = [col for col in train_df.columns if col.startswith('syn_')]\n",
+    "\n",
+    "X_train_syntactic = train_df[syntactic_features_columns]\n",
+    "X_test_syntactic = test_df[syntactic_features_columns]\n",
+    "\n",
+    "# Train model\n",
+    "syntactic_model = train_random_forest(X_train_syntactic, y_train)\n",
+    "\n",
+    "# Predict and evaluate\n",
+    "y_pred_syntactic = syntactic_model.predict(X_test_syntactic)\n",
+    "syntactic_correlation = evaluate_model(y_test, y_pred_syntactic)\n",
+    "print(f\"Pearson Correlation (Syntactic Features): {syntactic_correlation:.4f}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.3 Using Semantic Features Only"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "semantic_features_columns = [col for col in train_df.columns if col.startswith('sem_')]\n",
+    "\n",
+    "X_train_semantic = train_df[semantic_features_columns]\n",
+    "X_test_semantic = test_df[semantic_features_columns]\n",
+    "\n",
+    "# Train model\n",
+    "semantic_model = train_xgboost(X_train_semantic, y_train)\n",
+    "\n",
+    "# Predict and evaluate\n",
+    "y_pred_semantic = semantic_model.predict(X_test_semantic)\n",
+    "semantic_correlation = train_random_forest(y_test, y_pred_semantic)\n",
+    "print(f\"Pearson Correlation (Semantic Features): {semantic_correlation:.4f}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.4 Using Combined Features"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "len(feature_columns)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Exclude target variable 'score'\n",
+    "feature_columns = [col for col in train_df.columns if col != 'score']\n",
+    "\n",
+    "X_train_combined = train_df[feature_columns]\n",
+    "X_test_combined = test_df[feature_columns]\n",
+    "\n",
+    "# Train model\n",
+    "combined_model = train_random_forest(X_train_combined, y_train)\n",
+    "\n",
+    "# Predict and evaluate\n",
+    "y_pred_combined = combined_model.predict(X_test_combined)\n",
+    "combined_correlation = evaluate_model(y_test, y_pred_combined)\n",
+    "print(f\"Pearson Correlation (Combined Features): {combined_correlation:.4f}\")\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 4. Feature Selection and Importance"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.1 Analyzing Feature Importances"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "from xgboost import XGBRegressor\n",
+    "from sklearn.metrics import mean_squared_error\n",
+    "import numpy as np\n",
+    "\n",
+    "\n",
+    "def train_random_forest(X_train, y_train, params=None):\n",
+    "    \"\"\"\n",
+    "    Train a Random Forest regressor.\n",
+    "\n",
+    "    Args:\n",
+    "        X_train: Training feature matrix.\n",
+    "        y_train: Training target values.\n",
+    "        params: Dictionary of Random Forest parameters.\n",
+    "\n",
+    "    Returns:\n",
+    "        model: Trained Random Forest model.\n",
+    "    \"\"\"\n",
+    "    if params is None:\n",
+    "        params = {'n_estimators': 100, 'random_state': 42}\n",
+    "    model = RandomForestRegressor(**params)\n",
+    "    model.fit(X_train, y_train)\n",
+    "    return model\n",
+    "\n",
+    "\n",
+    "def evaluate_model(y_true, y_pred):\n",
+    "    \"\"\"Calculate Pearson correlation coefficient.\"\"\"\n",
+    "    return np.corrcoef(y_true, y_pred)[0, 1]\n",
+    "\n",
+    "\n",
+    "def get_feature_importance(model, feature_columns):\n",
+    "    \"\"\"Retrieve feature importance from an XGBoost model.\"\"\"\n",
+    "    importance = model.feature_importances_\n",
+    "    return pd.DataFrame(\n",
+    "        {\"feature\": feature_columns, \"importance\": importance}\n",
+    "    ).sort_values(by=\"importance\", ascending=False)\n",
+    "\n",
+    "\n",
+    "def select_top_features(X, model, threshold=0.01):\n",
+    "    \"\"\"Select features with importance greater than the threshold.\"\"\"\n",
+    "    feature_importance = get_feature_importance(model, X.columns)\n",
+    "    top_features = feature_importance[feature_importance[\"importance\"] > threshold]\n",
+    "    return X[top_features[\"feature\"]]\n",
+    "\n",
+    "\n",
+    "# Exclude target variable 'score'\n",
+    "feature_columns = [col for col in train_df.columns if col != \"score\"]\n",
+    "\n",
+    "# Preprocessing for combined features\n",
+    "X_train_combined = train_df[feature_columns]\n",
+    "X_test_combined = test_df[feature_columns]\n",
+    "y_train = train_df[\"score\"]\n",
+    "y_test = test_df[\"score\"]\n",
+    "\n",
+    "# Train and evaluate the combined model\n",
+    "combined_model = train_random_forest(X_train_combined, y_train)\n",
+    "y_pred_combined = combined_model.predict(X_test_combined)\n",
+    "combined_correlation = evaluate_model(y_test, y_pred_combined)\n",
+    "print(f\"Pearson Correlation (Combined Features): {combined_correlation:.4f}\")\n",
+    "\n",
+    "# Prune irrelevant features for combined model\n",
+    "X_train_combined_pruned = select_top_features(X_train_combined, combined_model)\n",
+    "X_test_combined_pruned = X_test_combined[X_train_combined_pruned.columns]\n",
+    "\n",
+    "# Retrain the pruned combined model\n",
+    "pruned_combined_model = train_random_forest(X_train_combined_pruned, y_train)\n",
+    "y_pred_pruned_combined = pruned_combined_model.predict(X_test_combined_pruned)\n",
+    "pruned_combined_correlation = evaluate_model(y_test, y_pred_pruned_combined)\n",
+    "print(f\"Pearson Correlation (Pruned Combined Features): {pruned_combined_correlation:.4f}\")\n",
+    "\n",
+    "# Function to train, evaluate, and prune for specific feature groups\n",
+    "def train_and_prune_features(group_name, feature_prefix, train_df, test_df, y_train, y_test):\n",
+    "    feature_columns = [col for col in train_df.columns if col.startswith(feature_prefix)]\n",
+    "    X_train = train_df[feature_columns]\n",
+    "    X_test = test_df[feature_columns]\n",
+    "\n",
+    "    # Train and evaluate the model\n",
+    "    model = train_random_forest(X_train, y_train)\n",
+    "    y_pred = model.predict(X_test)\n",
+    "    correlation = evaluate_model(y_test, y_pred)\n",
+    "    print(f\"Pearson Correlation ({group_name} Features): {correlation:.4f}\")\n",
+    "\n",
+    "    # Prune irrelevant features\n",
+    "    X_train_pruned = select_top_features(X_train, model)\n",
+    "    X_test_pruned = X_test[X_train_pruned.columns]\n",
+    "\n",
+    "    # Retrain with pruned features\n",
+    "    pruned_model = train_random_forest(X_train_pruned, y_train)\n",
+    "    y_pred_pruned = pruned_model.predict(X_test_pruned)\n",
+    "    pruned_correlation = evaluate_model(y_test, y_pred_pruned)\n",
+    "    print(f\"Pearson Correlation (Pruned {group_name} Features): {pruned_correlation:.4f}\")\n",
+    "\n",
+    "    return pruned_model, X_train_pruned.columns\n",
+    "\n",
+    "\n",
+    "# Lexical features\n",
+    "train_and_prune_features(\"Lexical\", \"lex_\", train_df, test_df, y_train, y_test)\n",
+    "\n",
+    "# Syntactic features\n",
+    "train_and_prune_features(\"Syntactic\", \"syn_\", train_df, test_df, y_train, y_test)\n",
+    "\n",
+    "# Semantic features\n",
+    "train_and_prune_features(\"Semantic\", \"sem_\", train_df, test_df, y_train, y_test)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import matplotlib.pyplot as plt\n",
+    "\n",
+    "importance = combined_model.feature_importances_\n",
+    "feature_importance = pd.Series(importance, index=feature_columns)\n",
+    "feature_importance.sort_values(ascending=False, inplace=True)\n",
+    "\n",
+    "# Display top features\n",
+    "print(\"Top 10 Features:\")\n",
+    "print(feature_importance.head(10))\n",
+    "\n",
+    "# Plot feature importances\n",
+    "plt.figure(figsize=(12,6))\n",
+    "feature_importance.plot(kind='bar')\n",
+    "plt.title('Feature Importances from Combined Model')\n",
+    "plt.xlabel('Features')\n",
+    "plt.ylabel('Importance Score')\n",
+    "plt.show()\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.2 Feature Selection\n",
+    "We can select the top N features to see if a reduced feature set improves or maintains performance."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Select top N features\n",
+    "top_N = 10\n",
+    "top_features = feature_importance.index[:top_N]\n",
+    "\n",
+    "X_train_top = X_train_combined[top_features]\n",
+    "X_test_top = X_test_combined[top_features]\n",
+    "\n",
+    "# Retrain model with top features\n",
+    "top_model = train_xgboost(X_train_top, y_train)\n",
+    "\n",
+    "# Predict and evaluate\n",
+    "y_pred_top = top_model.predict(X_test_top)\n",
+    "top_correlation = evaluate_model(y_test, y_pred_top)\n",
+    "print(f\"Pearson Correlation (Top {top_N} Features): {top_correlation:.4f}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 5. Results and Analysis"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 5.1 Pearson Correlation Scores"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "results = {\n",
+    "    'Model': [\n",
+    "        'Lexical', \n",
+    "        'Syntactic', \n",
+    "        'Semantic', \n",
+    "        'Combined', \n",
+    "        f'Top {top_N} Features'\n",
+    "    ],\n",
+    "    'Pearson Correlation': [\n",
+    "        lexical_correlation,\n",
+    "        syntactic_correlation,\n",
+    "        semantic_correlation,\n",
+    "        combined_correlation,\n",
+    "        top_correlation,\n",
+    "    ],\n",
+    "}\n",
+    "\n",
+    "results_df = pd.DataFrame(results)\n",
+    "print(results_df)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "\n",
+    "**References for All Features:**\n",
+    "\n",
+    "- **Word Overlap Measures (Jaccard similarity, Dice coefficient, Overlap coefficient):** Used by multiple teams in SemEval 2012 Task 6, including [Baer et al., 2012], [Glinos, 2012], and [Jimenez et al., 2012].\n",
+    "\n",
+    "- **Edit Distance and String Similarity Measures:** Used by [Glinos, 2012] and [Jimenez et al., 2012].\n",
+    "\n",
+    "- **TF-IDF Vector Similarity:** Employed by the UKP team [Baer et al., 2012] for computing cosine similarity using TF-IDF vectors.\n",
+    "\n",
+    "- **Character N-gram Features:** Utilized by teams like [Baer et al., 2012] and [Jimenez et al., 2012].\n",
+    "\n",
+    "- **BLEU Score:** Used by [Baer et al., 2012] as part of the feature set.\n",
+    "\n",
+    "- **Content Word Overlap:** Considered by [Jimenez et al., 2012] in their similarity measures.\n",
+    "\n",
+    "- **POS Tag Features:** Teams like [Baer et al., 2012] and [Glinos, 2012] used POS tag overlaps and distributions.\n",
+    "\n",
+    "- **Dependency Relations and Tree Structures:** Explored by [Štajner et al., 2012] for syntactic similarity.\n",
+    "\n",
+    "- **WordNet-based Semantic Features:** Used extensively by the UKP team [Baer et al., 2012] and the TakeLab team [Štajner et al., 2012], including synonym overlap, hypernym/hyponym overlap, and various similarity measures.\n",
+    "\n",
+    "- **Named Entity Features:** Incorporated by [Baer et al., 2012].\n",
+    "\n",
+    "- **Sentiment Analysis Features:** Included by teams like [Gupta et al., 2012] in their submissions.\n",
+    "\n",
+    "- **Negation Handling:** Addressed by [Baer et al., 2012] to capture differences due to negation.\n",
+    "\n",
+    "**Referenced Papers:**\n",
+    "\n",
+    "- **[Baer et al., 2012]:**\n",
+    "\n",
+    "  Baer, P., and Zesch, T. (2012). UKP: Computing Semantic Textual Similarity by Combining Multiple Content Similarity Measures. *SemEval-2012*.\n",
+    "\n",
+    "- **[Štajner et al., 2012]:**\n",
+    "\n",
+    "  Štajner, S., Glavaš, G., Karan, M., Šnajder, J., and Dalbelo Bašić, B. (2012). TakeLab: Systems for Measuring Semantic Text Similarity. *SemEval-2012*.\n",
+    "\n",
+    "- **[Glinos, 2012]:**\n",
+    "\n",
+    "  Glinos, D. (2012). ATA-Semantics: Measuring the Similarity between Sentences. *SemEval-2012*.\n",
+    "\n",
+    "- **[Jimenez et al., 2012]:**\n",
+    "\n",
+    "  Jimenez, S., Becerra, C., and Gelbukh, A. (2012). Soft Cardinality: A Generalization of Dice's Similarity Coefficient for Enumerated Sets. *SemEval-2012*.\n",
+    "\n",
+    "- **[Gupta et al., 2012]:**\n",
+    "\n",
+    "  Gupta, S., Agarwal, A., and Joshi, S. (2012). Yedi: A Hybrid Distributional and Knowledge-based Word Similarity Measure. *SemEval-2012*.\n",
+    "\n",
+    "**Note:** All features utilize methods and resources available in 2012, adhering to the constraints of the SemEval 2012 Task 6.\n",
+    "\n",
+    "**Usage in Feature Extraction:**"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# References\n",
+    "\n",
+    "- Baer, D., Biemann, C., Gurevych, I., & Zesch, T. (2012). **UKP: Computing Semantic Textual Similarity by Combining Multiple Content Similarity Measures**. In *Proceedings of the First Joint Conference on Lexical and Computational Semantics* (pp. 435–440).\n",
+    "- Sarić, F., Glavaš, G., Karan, M., Šnajder, J., & Dalbelo Bašić, B. (2012). **TakeLab: Systems for Measuring Semantic Text Similarity**. In *Proceedings of the First Joint Conference on Lexical and Computational Semantics* (pp. 441–448).\n",
+    "- Jimenez, S., Becerra, C., & Gelbukh, A. (2012). **Soft Cardinality: A Generalized Similarity Measure for Comparesent of NLP Objects**. In *Proceedings of the First Joint Conference on Lexical and Computational Semantics* (pp. 449–453).\n",
+    "- Glinos, D. (2012). **ATA System: Text Similarity with LSA, Machine Learning, and Linguistic Features**. In *Proceedings of the First Joint Conference on Lexical and Computational Semantics* (pp. 475–480).\n",
+    "- Gupta, S., et al. (2012). **UMBC at SemEval-2012 Task 6: Similarity Based on Semantic Alignments**. In *Proceedings of the First Joint Conference on Lexical and Computational Semantics*.\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "ihlt",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.10.15"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}

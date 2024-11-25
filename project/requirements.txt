@@ -4,4 +4,5 @@ scikit-learn
 matplotlib
 xgboost
 nltk
+seaborn
 spacy==3.7.5 # matching colab
