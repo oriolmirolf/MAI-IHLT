@@ -10,7 +10,7 @@ from nltk.corpus import sentiwordnet as swn
 from nltk.corpus import wordnet_ic
 
 import spacy
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, pearsonr
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import TruncatedSVD, LatentDirichletAllocation
 from sklearn.pipeline import make_pipeline
@@ -19,7 +19,6 @@ from sklearn.preprocessing import Normalizer
 from itertools import chain
 import functools
 
-# Load spaCy model
 nlp = spacy.load('en_core_web_sm')
 
 from tqdm import tqdm
@@ -38,9 +37,9 @@ nltk.download('stopwords')
 # Load the information content file for Resnik similarity
 brown_ic = wordnet_ic.ic('ic-brown.dat')
 
-# ---------------------------- #
+# ---------------------------- #    
 #  FEATURE EXTRACTOR FUNCTION  #
-# ---------------------------- #
+# ---------------------------- #    
 
 class FeatureExtractor:
     def __init__(self):
@@ -91,9 +90,13 @@ class FeatureExtractor:
         # Convert the list of feature dictionaries to a DataFrame
         return pd.DataFrame(results)
 
-# ----------------------- #
+
+
+
+    
+# ----------------------- #    
 # ALL RELEVANT FUNCTIONS  #
-# ----------------------- #
+# ----------------------- #    
 
 @functools.lru_cache(maxsize=None)
 def preprocess_sentence(s):
@@ -163,6 +166,7 @@ def lexical_features(s1, s2):
     Returns:
         dict: A dictionary of lexical features.
     """
+    features = {}
     tokens1 = preprocess_sentence(s1)
     tokens2 = preprocess_sentence(s2)
     stopwords = set(nltk.corpus.stopwords.words('english'))
@@ -208,8 +212,8 @@ def lexical_features(s1, s2):
     # Reference: Basic vector space models
     euclidean_dist = np.linalg.norm(tfidf_vectors[0].toarray() - tfidf_vectors[1].toarray())
 
-    # Character n-gram overlap (n=2,3,4)
-    # Reference: Used by [Jimenez et al., 2012], [Bär et al., 2012], [UKP at SemEval-2012]
+    # Character n-gram overlaps (n=2,3,4)
+    # Reference: Used by [Barron-Cedeño et al., 2010], [UKP at SemEval-2012]
     char_ngram_overlaps = {}
     for n in [2, 3, 4]:
         char_ngrams1 = set([''.join(gram) for token in tokens1 for gram in ngrams(token, n)])
@@ -219,13 +223,17 @@ def lexical_features(s1, s2):
         char_ngram_overlap = char_overlap / char_union if char_union != 0 else 0
         char_ngram_overlaps[f'lex_char_{n}gram_overlap'] = char_ngram_overlap
 
-    # Character n-gram TF-IDF cosine similarity (n=2 to 4)
-    # Reference: Character-level features used by [Bär et al., 2012], [UKP at SemEval-2012]
+    # Character n-gram TF-IDF cosine similarity
+    # Reference: Character-level features used by [Bär et al., 2012]
     char_tfidf_vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 4)).fit([s1, s2])
     char_tfidf_vectors = char_tfidf_vectorizer.transform([s1, s2])
     char_tfidf_cosine_sim = cosine_similarity(char_tfidf_vectors[0], char_tfidf_vectors[1])[0][0]
 
-    # Word n-gram overlap using Containment measure (n=1,2), without stopwords
+    # Word n-gram overlap (n=2)
+    # Reference: Used by [Bär et al., 2012], [Štajner et al., 2012]
+    ngram_overlap = ngram_overlap_ratio(tokens1_no_stop, tokens2_no_stop, n=2)
+
+    # Word n-gram overlap using Containment measure (n=1,2)
     # Reference: Used by [UKP at SemEval-2012], Containment measure (Broder, 1997)
     word_ngram_containments = {}
     for n in [1, 2]:
@@ -235,10 +243,10 @@ def lexical_features(s1, s2):
         containment = len(intersection) / min(len(ngrams1), len(ngrams2)) if min(len(ngrams1), len(ngrams2)) != 0 else 0
         word_ngram_containments[f'lex_word_{n}gram_containment'] = containment
 
-    # Word n-gram overlap using Jaccard coefficient (n=1 to 4), with and without stopwords
+    # Word n-gram overlap using Jaccard coefficient (n=1,3,4), with and without stopwords
     # Reference: Used by [UKP at SemEval-2012]
     word_ngram_jaccards = {}
-    for n in [1, 2, 3, 4]:
+    for n in [1, 3, 4]:
         for stopword_setting, tokens1_set, tokens2_set in [('with_stop', tokens1, tokens2), ('no_stop', tokens1_no_stop, tokens2_no_stop)]:
             ngrams1 = set(ngrams(tokens1_set, n))
             ngrams2 = set(ngrams(tokens2_set, n))
@@ -247,15 +255,71 @@ def lexical_features(s1, s2):
             jaccard = len(intersection) / len(union) if len(union) != 0 else 0
             word_ngram_jaccards[f'lex_word_{n}gram_jaccard_{stopword_setting}'] = jaccard
 
+    # Stopword n-gram overlaps (n=2 to 10)
+    # Reference: Used by [Stamatatos, 2011], [UKP at SemEval-2012]
+    stopword_tokens1 = [w for w in tokens1 if w in stopwords]
+    stopword_tokens2 = [w for w in tokens2 if w in stopwords]
+
+    stopword_ngram_overlaps = {}
+    for n in range(2, 11):
+        ngrams1 = set(ngrams(stopword_tokens1, n))
+        ngrams2 = set(ngrams(stopword_tokens2, n))
+        intersection = ngrams1.intersection(ngrams2)
+        union = ngrams1.union(ngrams2)
+        overlap_aux = len(intersection) / len(union) if len(union) != 0 else 0
+        stopword_ngram_overlaps[f'lex_stopword_{n}gram_overlap'] = overlap_aux
+
+    # Function word frequencies
+    # Reference: Used by [Dinu and Popescu, 2009]
+    function_words = set(['the', 'and', 'of', 'to', 'a', 'in', 'that', 'is', 'was', 'he', 'for', 'it', 'with',
+                          'as', 'his', 'on', 'be', 'at', 'by', 'i', 'this', 'had', 'not', 'are', 'but', 'from',
+                          'or', 'have', 'an', 'they', 'which', 'one', 'you', 'were', 'her', 'all', 'she', 'there',
+                          'would', 'their', 'we', 'him', 'been', 'has', 'when', 'who', 'will', 'no', 'more',
+                          'if', 'out', 'so', 'said', 'what', 'up', 'its', 'about', 'than', 'into', 'them', 'can',
+                          'only', 'other', 'new', 'some', 'could', 'time', 'these', 'two', 'may', 'then', 'do',
+                          'first', 'any', 'my', 'now', 'such', 'like', 'our', 'over', 'man', 'me', 'even',
+                          'most', 'made', 'after', 'also', 'did', 'many', 'before', 'must', 'through', 'back',
+                          'years', 'where', 'much', 'your', 'way', 'well', 'down', 'should', 'because', 'each',
+                          'just', 'those', 'people'])
+
+    def get_function_word_frequencies(tokens, function_words):
+        freq_dict = {word: 0 for word in function_words}
+        total = 0
+        for token in tokens:
+            if token in freq_dict:
+                freq_dict[token] += 1
+                total += 1
+        if total > 0:
+            for word in freq_dict:
+                freq_dict[word] /= total
+        return freq_dict
+
+    freqs1 = get_function_word_frequencies(tokens1, function_words)
+    freqs2 = get_function_word_frequencies(tokens2, function_words)
+
+    function_words_common = [word for word in function_words if freqs1[word] > 0 or freqs2[word] > 0]
+    if len(function_words_common) >= 2:
+        values1 = [freqs1[word] for word in function_words_common]
+        values2 = [freqs2[word] for word in function_words_common]
+
+        # Check for constant arrays
+        if len(set(values1)) == 1 or len(set(values2)) == 1:
+            function_word_corr = 0  # Correlation is undefined for constant arrays
+        else:
+            correlation, _ = pearsonr(values1, values2)
+            function_word_corr = correlation if not np.isnan(correlation) else 0
+    else:
+        function_word_corr = 0
+
+    # Greedy String Tiling similarity
+    # Reference: Used by [UKP at SemEval-2012], Greedy String Tiling (Wise, 1996)
+    gst_similarity = greedy_string_tiling(' '.join(tokens1), ' '.join(tokens2), min_match_length=3)
+
     # Longest Common Substring length normalized by average sentence length
     # Reference: Used by [Bär et al., 2012], [Glinos, 2012], [UKP at SemEval-2012]
     lcs_length = longest_common_substring_length(' '.join(tokens1), ' '.join(tokens2))
     avg_len = (len(' '.join(tokens1)) + len(' '.join(tokens2))) / 2
     lcs_norm = lcs_length / avg_len if avg_len != 0 else 0
-
-    # Greedy String Tiling similarity
-    # Reference: Used by [UKP at SemEval-2012], Greedy String Tiling (Wise, 1996)
-    gst_similarity = greedy_string_tiling(' '.join(tokens1), ' '.join(tokens2), min_match_length=3)
 
     # Existing features retained
     # Word n-gram overlap (n=2)
@@ -281,6 +345,7 @@ def lexical_features(s1, s2):
     len_ratio = min(len(tokens1), len(tokens2)) / max(len(tokens1), len(tokens2)) if max(len(tokens1), len(tokens2)) != 0 else 0
 
     # Absolute length difference
+    # Reference: Additional lexical feature
     length_diff = abs(len(tokens1) - len(tokens2))
 
     # Content word overlap ratio (nouns, verbs, adjectives, adverbs)
@@ -320,7 +385,13 @@ def lexical_features(s1, s2):
     tokens2_no_stop_set = set(tokens2_no_stop)
     soft_jaccard = soft_jaccard_similarity(tokens1_no_stop_set, tokens2_no_stop_set)
 
-    features.update({
+    # Type-Token Ratio (TTR)
+    # Reference: Statistical properties of texts [Templin, 1957]
+    ttr1 = len(set(tokens1)) / len(tokens1) if len(tokens1) > 0 else 0
+    ttr2 = len(set(tokens2)) / len(tokens2) if len(tokens2) > 0 else 0
+    ttr_diff = abs(ttr1 - ttr2)
+
+    features = {
         'lex_jaccard': jaccard,
         'lex_dice_coeff': dice_coeff,
         'lex_overlap_coeff': overlap_coeff,
@@ -328,8 +399,7 @@ def lexical_features(s1, s2):
         'lex_jaro_winkler': jaro_winkler,
         'lex_cosine_sim': cosine_sim,
         'lex_euclidean_dist': euclidean_dist,
-        'lex_lcs_norm': lcs_norm,
-        'lex_gst_similarity': gst_similarity,
+        'lex_char_tfidf_cosine_sim': char_tfidf_cosine_sim,
         'lex_ngram_overlap': ngram_overlap,
         'lex_bleu_score': bleu_score,
         'lex_common_word_count': common_word_count,
@@ -343,12 +413,16 @@ def lexical_features(s1, s2):
         'lex_ngram_recall_1': ngram_recalls[0],
         'lex_ngram_recall_2': ngram_recalls[1],
         'lex_ngram_recall_3': ngram_recalls[2],
+        'lex_lcs_norm': lcs_norm,
         'lex_soft_jaccard': soft_jaccard,
-    })
+        'lex_function_word_corr': function_word_corr,
+        'lex_gst_similarity': gst_similarity,
+        'lex_ttr_diff': ttr_diff,
+    }
     features.update(char_ngram_overlaps)
     features.update(word_ngram_containments)
     features.update(word_ngram_jaccards)
-
+    features.update(stopword_ngram_overlaps)
     return features
 
 def syntactic_features(s1, s2):
@@ -364,6 +438,7 @@ def syntactic_features(s1, s2):
     Returns:
         dict: A dictionary of syntactic features.
     """
+    features = {}
     tokens1 = preprocess_sentence(s1)
     tokens2 = preprocess_sentence(s2)
 
@@ -396,6 +471,17 @@ def syntactic_features(s1, s2):
         intersection = ngrams1.intersection(ngrams2)
         containment = len(intersection) / min(len(ngrams1), len(ngrams2)) if min(len(ngrams1), len(ngrams2)) != 0 else 0
         pos_ngram_containments[f'syn_pos_{n}gram_containment'] = containment
+
+    # POS tag n-gram overlap using Jaccard coefficient (n=2 to 4)
+    # Reference: Used by [UKP at SemEval-2012]
+    pos_ngram_jaccards = {}
+    for n in [2, 3, 4]:
+        ngrams1 = set(ngrams(pos_tags1, n))
+        ngrams2 = set(ngrams(pos_tags2, n))
+        intersection = ngrams1.intersection(ngrams2)
+        union = ngrams1.union(ngrams2)
+        jaccard = len(intersection) / len(union) if len(union) != 0 else 0
+        pos_ngram_jaccards[f'syn_pos_{n}gram_jaccard'] = jaccard
 
     # Dependency relation overlap
     # Reference: Used by [Štajner et al., 2012]
@@ -495,6 +581,14 @@ def syntactic_features(s1, s2):
         'pos_adv_diff': abs(counts1['R'] - counts2['R']),
     }
 
+    # Word Pair Order
+    # Reference: Used by [Hatzivassiloglou et al., 1999]
+    word_pair_order_ratio = word_pair_order(tokens1, tokens2)
+
+    # Word Pair Distance
+    # Reference: Used by [Hatzivassiloglou et al., 1999]
+    word_pair_distance_diff = word_pair_distance(tokens1, tokens2)
+
     features = {
         'syn_pos_overlap_ratio': pos_overlap_ratio,
         'syn_pos_bigram_overlap': pos_bigram_overlap,
@@ -511,9 +605,12 @@ def syntactic_features(s1, s2):
         'syn_pos_ngram_recall_2': pos_ngram_recalls[1],
         'syn_dep_precision': dep_precision,
         'syn_dep_recall': dep_recall,
+        'syn_word_pair_order_ratio': word_pair_order_ratio,
+        'syn_word_pair_distance_diff': word_pair_distance_diff,
     }
     features.update(pos_diff_features)
     features.update(pos_ngram_containments)
+    features.update(pos_ngram_jaccards)
     return features
 
 def semantic_features(s1, s2):
@@ -529,20 +626,12 @@ def semantic_features(s1, s2):
     Returns:
         dict: A dictionary of semantic features.
     """
+    features = {}
     tokens1 = preprocess_sentence(s1)
     tokens2 = preprocess_sentence(s2)
     stopwords = set(nltk.corpus.stopwords.words('english'))
     tokens1_no_stop = [w for w in tokens1 if w not in stopwords]
     tokens2_no_stop = [w for w in tokens2 if w not in stopwords]
-
-    # Word Similarity using Resnik (1995) on WordNet aggregated according to Mihalcea et al. (2006)
-    # Reference: Used by [UKP at SemEval-2012]
-    resnik_similarity = word_similarity_resnik_aggregate(tokens1_no_stop, tokens2_no_stop)
-
-    # Explicit Semantic Analysis (ESA) similarity
-    # Reference: Used by [UKP at SemEval-2012]
-    # Approximate ESA using pre-trained embeddings
-    esa_similarity = esa_sim(tokens1_no_stop, tokens2_no_stop)
 
     # Synonym Matching Based on WordNet Synsets
     # Reference: Used by [Bär et al., 2012], [Jimenez et al., 2012]
@@ -579,6 +668,7 @@ def semantic_features(s1, s2):
                 synsets2 = wn.synsets(word2)
                 for syn1 in synsets1:
                     for syn2 in synsets2:
+                        # Only compute similarity for synsets with the same POS
                         if syn1.pos() == syn2.pos():
                             sim = similarity_func(syn1, syn2)
                             if sim is not None:
@@ -590,20 +680,24 @@ def semantic_features(s1, s2):
         avg_sim = total_sim / count if count > 0 else 0
         return avg_sim, max_sim
 
+
     # WordNet Path Similarity (Average and Max)
+    # Reference: Used by [Bär et al., 2012]
     avg_sim_path, max_sim_path = avg_max_wordnet_similarity(tokens1, tokens2, lambda s1, s2: s1.path_similarity(s2))
 
     # WordNet Wu-Palmer Similarity (Average and Max)
+    # Reference: Used by [Bär et al., 2012], [Štajner et al., 2012]
     avg_sim_wup, max_sim_wup = avg_max_wordnet_similarity(tokens1, tokens2, lambda s1, s2: s1.wup_similarity(s2))
 
     # WordNet Leacock-Chodorow Similarity (Average and Max)
+    # Reference: Used by [Bär et al., 2012]
     avg_sim_lch, max_sim_lch = avg_max_wordnet_similarity(tokens1, tokens2, lambda s1, s2: s1.lch_similarity(s2))
 
     # Antonym overlap ratio
     # Reference: Capturing antonyms and negation differences, inspired by [Bär et al., 2012]
     antonym_ratio = antonym_overlap(tokens1, tokens2)
 
-    # Named entity overlap
+    # Named entity overlap (enhanced)
     # Reference: Used by [Bär et al., 2012]
     ne_overlap = named_entity_overlap(s1, s2)
     ne_type_overlap = named_entity_type_overlap(s1, s2)
@@ -646,13 +740,12 @@ def semantic_features(s1, s2):
     # Reference: [Heilman and Madnani, 2012] - ETS: Discriminative Edit Models
     sem_srl_overlap = semantic_role_overlap(s1, s2)
 
+
     # Temporal Expression Overlap
     # Reference: [Sultan et al., 2012] - DLS@CU: Sentence Similarity from Word Alignment
     sem_temporal_overlap = temporal_expression_overlap(s1, s2)
 
     features = {
-        'sem_resnik_similarity': resnik_similarity,
-        'sem_esa_similarity': esa_similarity,
         'sem_synonym_overlap': synonym_overlap,
         'sem_lexical_chain_overlap': lexical_chain_overlap,
         'sem_ne_overlap': ne_overlap,
@@ -675,66 +768,6 @@ def semantic_features(s1, s2):
     features.update(negation_feature)
     return features
 
-def word_similarity_resnik_aggregate(tokens1, tokens2):
-    """
-    Compute word similarity using Resnik (1995) on WordNet aggregated according to Mihalcea et al. (2006).
-
-    Args:
-        tokens1 (list): Tokens from the first sentence (without stopwords).
-        tokens2 (list): Tokens from the second sentence (without stopwords).
-
-    Returns:
-        float: Aggregated Resnik similarity score.
-    """
-    # Build IDF weights using a dummy corpus (as we don't have a large corpus here)
-    # For this example, we'll assign an IDF of 1 to all words
-    idf_weights = {word: 1.0 for word in set(tokens1 + tokens2)}
-
-    # Function to compute maximum Resnik similarity for a word
-    def max_resnik_similarity(word, other_tokens):
-        max_sim = 0
-        synsets1 = wn.synsets(word)
-        for other_word in other_tokens:
-            synsets2 = wn.synsets(other_word)
-            for s1 in synsets1:
-                for s2 in synsets2:
-                    if s1.pos() == s2.pos():
-                        sim = s1.res_similarity(s2, brown_ic)
-                        if sim is not None and sim > max_sim:
-                            max_sim = sim
-        return max_sim
-
-    # Compute aggregated similarity from s1 to s2
-    sim_s1_s2 = sum(idf_weights[word] * max_resnik_similarity(word, tokens2) for word in tokens1)
-    sim_s2_s1 = sum(idf_weights[word] * max_resnik_similarity(word, tokens1) for word in tokens2)
-    # Normalize by the sum of IDF weights
-    sum_idf_s1 = sum(idf_weights[word] for word in tokens1)
-    sum_idf_s2 = sum(idf_weights[word] for word in tokens2)
-    if sum_idf_s1 + sum_idf_s2 > 0:
-        sim = (sim_s1_s2 + sim_s2_s1) / (sum_idf_s1 + sum_idf_s2)
-    else:
-        sim = 0.0
-    return sim
-
-def esa_sim(tokens1, tokens2):
-    """
-    Approximate Explicit Semantic Analysis (ESA) similarity using pre-trained word embeddings.
-
-    Args:
-        tokens1 (list): Tokens from the first sentence (without stopwords).
-        tokens2 (list): Tokens from the second sentence (without stopwords).
-
-    Returns:
-        float: ESA similarity score.
-    """
-    # Use spaCy's GloVe embeddings as an approximation
-    doc1 = nlp(' '.join(tokens1))
-    doc2 = nlp(' '.join(tokens2))
-    if doc1.vector_norm and doc2.vector_norm:
-        sim = doc1.similarity(doc2)
-    else:
-        sim = 0.0
-    return sim
 
 def greedy_string_tiling(s1, s2, min_match_length=3):
     """
@@ -782,8 +815,6 @@ def greedy_string_tiling(s1, s2, min_match_length=3):
     average_length = (len(tokens1) + len(tokens2)) / 2
     gst_similarity = total_matched / average_length if average_length != 0 else 0
     return gst_similarity
-
-# Existing functions for other features remain unchanged
 
 def synonym_overlap_ratio(tokens1, tokens2):
     """
@@ -1128,7 +1159,7 @@ def compute_sentiment_score(tokens):
             pos_score += swn_synset.pos_score()
             neg_score += swn_synset.neg_score()
             obj_score += swn_synset.obj_score()
-            count += 1
+            count +=1
     if count > 0:
         pos_score /= count
         neg_score /= count
@@ -1204,6 +1235,7 @@ def extract_semantic_roles(doc):
             roles.add((token.lemma_, token.dep_))
     return roles
 
+
 def temporal_expression_overlap(s1, s2):
     """
     Compute overlap of temporal expressions between two sentences.
@@ -1216,4 +1248,69 @@ def temporal_expression_overlap(s1, s2):
     temp_expressions2 = set([ent.text for ent in doc2.ents if ent.label_ in {'DATE', 'TIME'}])
     overlap = temp_expressions1.intersection(temp_expressions2)
     union = temp_expressions1.union(temp_expressions2)
+    return len(overlap) / len(union) if len(union) else 0
+
+def word_pair_order(tokens1, tokens2):
+    """
+    Compute the ratio of word pairs that occur in the same order in both sentences.
+
+    Reference: [Hatzivassiloglou et al., 1999]
+    """
+    pairs1 = set(zip(tokens1, tokens1[1:]))
+    pairs2 = set(zip(tokens2, tokens2[1:]))
+    common_pairs = pairs1.intersection(pairs2)
+    total_pairs = len(pairs1.union(pairs2))
+    return len(common_pairs) / total_pairs if total_pairs != 0 else 0
+
+def word_pair_distance(tokens1, tokens2):
+    """
+    Compute the average absolute difference in distances between word pairs in both sentences.
+
+    Reference: [Hatzivassiloglou et al., 1999]
+    """
+    word_positions1 = {word: idx for idx, word in enumerate(tokens1)}
+    word_positions2 = {word: idx for idx, word in enumerate(tokens2)}
+    common_words = set(word_positions1.keys()).intersection(set(word_positions2.keys()))
+    if len(common_words) < 2:
+        return 0
+    distances1 = []
+    distances2 = []
+    for word1 in common_words:
+        for word2 in common_words:
+            if word1 != word2:
+                dist1 = abs(word_positions1[word1] - word_positions1[word2])
+                dist2 = abs(word_positions2[word1] - word_positions2[word2])
+                distances1.append(dist1)
+                distances2.append(dist2)
+    if distances1 and distances2:
+        avg_distance_diff = np.mean([abs(d1 - d2) for d1, d2 in zip(distances1, distances2)])
+        return avg_distance_diff
+    else:
+        return 0
+
+def subtree_overlap_ratio(s1, s2):
+    """
+    Compute the overlap ratio of subtrees between two sentences' constituency parse trees.
+
+    Reference: Approximated method inspired by [Croce et al., 2012]
+    """
+    # Note: Requires a constituency parser; spaCy provides dependency parsing.
+    # You can use benepar with spaCy for constituency parsing.
+    try:
+        import benepar
+        if 'benepar' not in nlp.pipe_names:
+            nlp.add_pipe('benepar', config={'model': 'benepar_en3'})
+    except ImportError:
+        print("Please install benepar for constituency parsing.")
+        return 0
+
+    doc1 = nlp(s1)
+    doc2 = nlp(s2)
+    if not doc1._.constituents or not doc2._.constituents:
+        return 0
+
+    subtrees1 = set([str(constituent) for constituent in doc1._.constituents])
+    subtrees2 = set([str(constituent) for constituent in doc2._.constituents])
+    overlap = subtrees1.intersection(subtrees2)
+    union = subtrees1.union(subtrees2)
     return len(overlap) / len(union) if len(union) else 0
