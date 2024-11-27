@@ -1,25 +1,35 @@
 # models.py
 
-import numpy as np
-from sklearn.model_selection import KFold
-from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.svm import SVR
 
-def train_model(X, y):
-    model = LinearRegression()
-    model.fit(X, y)
-    return model
-
-def cross_validate_model(X, y, cv=5):
-    kf = KFold(n_splits=cv, shuffle=True, random_state=42)
-    scores = []
-    for train_index, val_index in kf.split(X):
-        X_train_cv, X_val_cv = X[train_index], X[val_index]
-        y_train_cv, y_val_cv = y[train_index], y[val_index]
-        model = train_model(X_train_cv, y_train_cv)
-        y_pred_cv = model.predict(X_val_cv)
-        score = evaluate_predictions(y_val_cv, y_pred_cv)
-        scores.append(score)
-    return np.mean(scores)
-
-def predict(model, X):
-    return model.predict(X)
+# Define models and their hyperparameter grids
+models = {
+    'RandomForest': {
+        'model': RandomForestRegressor(random_state=42),
+        'param_grid': {
+            'n_estimators': [100, 200],
+            'max_depth': [None, 5, 10],
+            'min_samples_split': [2, 5],
+            'min_samples_leaf': [1, 2],
+        }
+    },
+    'SVR': {
+        'model': SVR(),
+        'param_grid': {
+            'C': [1.0, 10.0],
+            'gamma': ['scale', 'auto'],
+            'kernel': ['rbf', 'linear']
+        }
+    },
+    'GradientBoosting': {
+        'model': GradientBoostingRegressor(random_state=42),
+        'param_grid': {
+            'n_estimators': [100, 200],
+            'learning_rate': [0.1, 0.05],
+            'max_depth': [3, 5],
+            'min_samples_split': [2, 5],
+            'min_samples_leaf': [1, 2],
+        }
+    }
+}
